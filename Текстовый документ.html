@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Snake Evo: Hardcore Evolution</title>
+    <style>
+        :root { --accent: #ff4757; --player: #2ed573; --npc: #ffa502; --gold: #f1c40f; --bg: #050505; }
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; }
+        #setup, #msg { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; }
+        #questMenu { position: fixed; inset: 20px; background: #0c0c0c; border: 2px solid #333; border-radius: 20px; z-index: 2000; display: none; flex-direction: column; padding: 25px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab-btn { background: #1a1a1a; border: 1px solid #444; color: #888; padding: 10px 15px; border-radius: 8px; cursor: pointer; }
+        .tab-btn.active { color: var(--gold); border-color: var(--gold); background: #222; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; overflow-y: auto; padding: 10px; flex-grow: 1; }
+        .card { background: #151515; border: 1px solid #222; padding: 12px; border-radius: 12px; text-align: center; }
+        .card.locked { opacity: 0.4; filter: grayscale(1); }
+        .btn { padding: 10px 20px; background: var(--gold); border: none; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        .hud { position: fixed; top: 20px; left: 20px; right: 20px; pointer-events: none; z-index: 500; display: flex; flex-direction: column; gap: 8px; }
+        .stats { display: flex; justify-content: space-between; font-weight: bold; font-size: 18px; }
+        .bar { width: 100%; height: 10px; background: #111; border-radius: 5px; border: 1px solid #333; overflow: hidden; }
+        #hungerBar { width: 100%; height: 100%; background: var(--accent); transition: 0.2s; }
+    </style>
+</head>
+<body>
+
+    <div id="setup">
+        <h1 style="color: var(--player); font-size: 50px; margin:0">SNAKE EVO</h1>
+        <div style="color: var(--gold)">💰 Кошелек: <span id="mainWallet">0</span></div>
+        <button class="btn" style="width: 200px" onclick="startGame()">ИГРАТЬ</button>
+    </div>
+
+    <div id="questMenu">
+        <div class="tabs">
+            <button class="tab-btn active" onclick="setTab('m')">МИССИИ</button>
+            <button class="tab-btn" onclick="setTab('a')">АЧИВКИ</button>
+            <button class="tab-btn" onclick="setTab('s')">МАГАЗИН</button>
+        </div>
+        <div id="tabContent" class="grid"></div>
+        <button class="btn" style="background:#444; color:white; margin-top:15px" onclick="toggleMenu()">ЗАКРЫТЬ</button>
+    </div>
+
+    <div id="msg" style="display:none">
+        <h1 id="resTitle">GAME OVER</h1>
+        <button class="btn" onclick="initGame()">ВЕРНУТЬСЯ</button>
+    </div>
+
+    <div class="hud">
+        <div class="stats">
+            <span id="scoreText" style="color:var(--player)">🍎 0</span>
+            <span id="npcText" style="color:var(--npc)">Bots: 0</span>
+            <span id="timerText" style="color:var(--gold)">0s</span>
+        </div>
+        <div class="bar"><div id="hungerBar"></div></div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    let w, h, isDead = true, player, npcs = [], food, score, hunger, wallet, activeMission = null;
+    let keys = {}, currentTab = 'm', lastSpawnTime = 0;
+    
+    wallet = parseInt(localStorage.getItem('snk_wallet')) || 0;
+    let achievements = JSON.parse(localStorage.getItem('snk_ach')) || [];
+    let ownedSkins = JSON.parse(localStorage.getItem('snk_skins')) || ['#2ed573'];
+    let currentSkin = localStorage.getItem('snk_skin') || '#2ed573';
+
+    const missions = Array.from({length: 40}, (_, i) => ({
+        id: i + 1,
+        title: `Миссия ${i + 1}`,
+        desc: (i + 1) % 5 === 0 ? `Выживи ${(i + 1) * 3} сек. (Еды нет!)` : `Собери ${(i + 1) * 3} фруктов`,
+        goal: (i + 1) % 5 === 0 ? (i + 1) * 3 : (i + 1) * 3,
+        type: (i + 1) % 5 === 0 ? 't' : 'f',
+        reward: (i + 1) * 50
+    }));
+
+    function resize() { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; }
+    window.onresize = resize; resize();
+
+    function startGame() { document.getElementById("setup").style.display="none"; initGame(); loop(); }
+
+    function initGame(m = null) {
+        isDead = false; score = 0; hunger = 1000; npcs = []; activeMission = m; lastSpawnTime = 0;
+        player = { body: [], x: w/2, y: h/2, angle: 0, targetAngle: 0, progress: 0, start: Date.now() };
+        for(let i=0; i<25; i++) player.body.push({x: w/2, y: h/2});
+        document.getElementById("msg").style.display="none";
+        document.getElementById("questMenu").style.display="none";
+        spawnFood();
+        updateUI();
+    }
+
+    function spawnFood() {
+        if(activeMission?.type === 't') { food = {x:-1000, y:-1000}; return; }
+        food = { x: 50+Math.random()*(w-100), y: 50+Math.random()*(h-100) };
+    }
+
+    function spawnNPC() {
+        const types = ['normal', 'red', 'yellow', 'ghost'];
+        const t = types[Math.floor(Math.random()*types.length)];
+        let n = { type: t, body: [], x: Math.random()*w, y: Math.random()*h, angle: Math.random()*6, speed: t==='yellow'?1.5:2.5 };
+        let len = t === 'yellow' ? 60 : 25;
+        for(let i=0; i<len; i++) n.body.push({x: n.x, y: n.y});
+        npcs.push(n);
+    }
+
+    function toggleMenu() {
+        const m = document.getElementById("questMenu");
+        const vis = m.style.display === 'flex';
+        m.style.display = vis ? 'none' : 'flex';
+        isDead = !vis;
+        if(!vis) renderTab();
+    }
+
+    function setTab(t) { currentTab = t; renderTab(); }
+
+    function renderTab() {
+        const cont = document.getElementById("tabContent");
+        cont.innerHTML = '';
+        if(currentTab === 'm') {
+            missions.forEach(m => {
+                const done = achievements.includes(m.id);
+                cont.innerHTML += `<div class="card" style="border-color:${done?'var(--gold)':'#222'}">
+                    <h4>${m.title}</h4><p style="font-size:10px">${m.desc}</p>
+                    <button class="btn" style="width:100%;font-size:10px" onclick="initGame(missions[${m.id-1}])">${done?'ПОВТОР':'СТАРТ'}</button>
+                </div>`;
+            });
+        } else if(currentTab === 'a') {
+            missions.forEach(m => {
+                const done = achievements.includes(m.id);
+                cont.innerHTML += `<div class="card ${done?'':'locked'}"><h3>${done?'🏆':'🔒'}</h3><p>Ачивка ${m.id}</p></div>`;
+            });
+        } else {
+            cont.innerHTML = `<div class="card" style="grid-column:1/-1">💰 Баланс: ${wallet}</div>`;
+            [{n:'Неон', v:'#00d2ff', p:500}, {n:'Фантом', v:'rgba(255,255,255,0.2)', p:1500}].forEach(s => {
+                cont.innerHTML += `<div class="card"><h4>${s.n}</h4><button class="btn" style="width:100%" onclick="buySkin('${s.v}',${s.p})">${ownedSkins.includes(s.v)?'ВЫБРАТЬ':s.p}</button></div>`;
+            });
+        }
+    }
+
+    function buySkin(v, p) {
+        if(ownedSkins.includes(v)) currentSkin = v;
+        else if(wallet >= p) { wallet -= p; ownedSkins.push(v); currentSkin = v; save(); }
+        renderTab();
+    }
+
+    function save() {
+        localStorage.setItem('snk_wallet', wallet);
+        localStorage.setItem('snk_ach', JSON.stringify(achievements));
+        localStorage.setItem('snk_skins', JSON.stringify(ownedSkins));
+        localStorage.setItem('snk_skin', currentSkin);
+    }
+
+    window.onkeydown = e => {
+        if(e.code === 'Tab') { e.preventDefault(); toggleMenu(); }
+        keys[e.code] = true;
+        let a = player.targetAngle;
+        if(e.code==='ArrowUp'||e.code==='KeyW') player.targetAngle = -Math.PI/2;
+        if(e.code==='ArrowDown'||e.code==='KeyS') player.targetAngle = Math.PI/2;
+        if(e.code==='ArrowLeft'||e.code==='KeyA') player.targetAngle = Math.PI;
+        if(e.code==='ArrowRight'||e.code==='KeyD') player.targetAngle = 0;
+    };
+    window.onkeyup = e => keys[e.code] = false;
+
+    function update() {
+        if(isDead) return;
+        let now = Date.now();
+        let elapsed = (now - player.start)/1000;
+        hunger -= keys['ShiftLeft'] ? 5 : 2;
+
+        // Движение
+        let diff = player.targetAngle - player.angle;
+        while(diff < -Math.PI) diff += Math.PI*2;
+        while(diff > Math.PI) diff -= Math.PI*2;
+        player.angle += diff * 0.15;
+        let s = keys['ShiftLeft'] ? 6.5 : 4;
+        player.x += Math.cos(player.angle) * s;
+        player.y += Math.sin(player.angle) * s;
+        player.body.unshift({x: player.x, y: player.y});
+
+        // Питание
+        if(Math.hypot(player.x - food.x, player.y - food.y) < 25) {
+            score++; hunger = Math.min(1000, hunger + 250); wallet += 10;
+            if(activeMission?.type === 'f') {
+                player.progress++;
+                if(player.progress >= activeMission.goal) win();
+            }
+            for(let i=0; i<10; i++) player.body.push({...player.body[player.body.length-1]});
+            spawnFood();
+        } else player.body.pop();
+
+        // Логика спавна NPC
+        if(activeMission?.type === 't') {
+            // Режим времени: спавн сокращается от 5сек до 1сек
+            let spawnRate = Math.max(1000, 5000 - (elapsed / activeMission.goal) * 4000);
+            if(now - lastSpawnTime > spawnRate) {
+                spawnNPC(); lastSpawnTime = now;
+            }
+            if(elapsed >= activeMission.goal) win();
+        } else {
+            // Обычный режим: +1 спавнер каждые 5 яблок
+            let maxNpcs = 1 + Math.floor(score / 5);
+            if(npcs.length < maxNpcs && Math.random() < 0.02) spawnNPC();
+        }
+
+        if(player.x<0 || player.x>w || player.y<0 || player.y>h || hunger <= 0) finish("GAME OVER");
+
+        // NPC AI
+        npcs.forEach((n, i) => {
+            let target = (n.type === 'normal' && activeMission?.type !== 't') ? food : player;
+            let ang = Math.atan2(target.y - n.y, target.x - n.x);
+            let boost = (n.type === 'red' || n.type === 'ghost') && Math.hypot(player.x-n.x, player.y-n.y) < 250;
+            n.angle += (ang - n.angle) * 0.1;
+            let spd = n.speed * (boost ? 2 : 1);
+            n.x += Math.cos(n.angle) * spd; n.y += Math.sin(n.angle) * spd;
+            n.body.unshift({x: n.x, y: n.y}); n.body.pop();
+
+            if(n.type === 'normal' && Math.hypot(n.x - food.x, n.y - food.y) < 20) spawnFood();
+            if(Math.hypot(player.x - n.x, player.y - n.y) < 20) finish("СЪЕДЕН БОТОМ");
+            
+            player.body.slice(10).forEach(seg => {
+                if(Math.hypot(n.x - seg.x, n.y - seg.y) < 15) { 
+                    npcs.splice(i, 1); 
+                    hunger = Math.min(1000, hunger + 400); // Только так можно выжить во времени
+                    wallet += 20;
+                }
+            });
+        });
+        updateUI(elapsed);
+    }
+
+    function updateUI(el=0) {
+        document.getElementById("scoreText").innerText = activeMission?.type==='f' ? `🍎 ${player.progress}/${activeMission.goal}` : `🍎 ${score}`;
+        document.getElementById("timerText").innerText = activeMission?.type==='t' ? `⏱ ${Math.floor(el)}/${activeMission.goal}s` : `${Math.floor(el)}s`;
+        document.getElementById("npcText").innerText = `Bots: ${npcs.length}`;
+        document.getElementById("hungerBar").style.width = (hunger/10) + "%";
+        document.getElementById("mainWallet").innerText = wallet;
+    }
+
+    function win() {
+        if(!achievements.includes(activeMission.id)) { achievements.push(activeMission.id); }
+        wallet += activeMission.reward; save(); finish("ПОБЕДА!");
+    }
+
+    function finish(t) { isDead = true; document.getElementById("resTitle").innerText = t; document.getElementById("msg").style.display = "flex"; save(); }
+
+    function draw() {
+        ctx.fillStyle = "#050505"; ctx.fillRect(0,0,w,h);
+        ctx.strokeStyle = "#111";
+        for(let i=0; i<w; i+=60) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,h); ctx.stroke(); }
+        for(let i=0; i<h; i+=60) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(w,i); ctx.stroke(); }
+
+        if(activeMission?.type !== 't') {
+            ctx.fillStyle = "red"; ctx.shadowBlur = 10; ctx.shadowColor = "red";
+            ctx.beginPath(); ctx.arc(food.x, food.y, 12, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+        }
+
+        npcs.forEach(n => {
+            ctx.beginPath(); ctx.lineWidth = n.type==='ghost'?2:15;
+            ctx.strokeStyle = n.type==='red'?'#ff4757':(n.type==='yellow'?'#f1c40f':(n.type==='ghost'?'#00ffff':'#ffa502'));
+            ctx.moveTo(n.body[0].x, n.body[0].y);
+            n.body.forEach(b => ctx.lineTo(b.x, b.y)); ctx.stroke();
+        });
+
+        ctx.lineWidth = 20; ctx.lineCap = "round"; ctx.strokeStyle = currentSkin;
+        ctx.beginPath(); ctx.moveTo(player.body[0].x, player.body[0].y);
+        player.body.forEach(b => ctx.lineTo(b.x, b.y)); ctx.stroke();
+    }
+
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+</script>
+</body>
+</html>
